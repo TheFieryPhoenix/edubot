@@ -166,11 +166,11 @@ def compute_inverse_kinematics(X, Y, Z, theta_pitch=0.0, roll=0.0):
 # ==========================================
 def main():
     # --- Define Targets ---
-    target_X = 0.0
-    target_Y = 0.0452
-    target_Z = 0.45
-    target_pitch = 0.785
-    target_roll = 3.141
+    target_X = 0.18
+    target_Y = 0.08
+    target_Z = 0.01
+    target_pitch = -1.57
+    target_roll = 0
  
     print("--------------------------------------------------")
     print(f" Target Point: X={target_X}, Y={target_Y}, Z={target_Z}, Pitch={target_pitch}, Roll={target_roll}")
