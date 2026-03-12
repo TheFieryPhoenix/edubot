@@ -23,6 +23,9 @@ setup(
             'example_pos_traj = python_controllers.example_pos_traj:main',
             'example_vel_traj = python_controllers.example_vel_traj:main',
             'group_pos_traj = python_controllers.group_pos_traj:main',
+            'triangle_draw = python_controllers.triangle_draw:main',
+            'test_ik_pos = python_controllers.test_ik_pos:main',
+            'group_velocity_traj = python_controllers.group_velocity_traj:main',
         ],
     },
 )
