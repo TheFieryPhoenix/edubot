@@ -26,6 +26,8 @@ setup(
             'triangle_draw = python_controllers.triangle_draw:main',
             'test_ik_pos = python_controllers.test_ik_pos:main',
             'group_velocity_traj = python_controllers.group_velocity_traj:main',
+            'group_vel_traj = python_controllers.group_vel_traj:main',
+            'pickup_traj = python_controllers.pickup_traj:main',
         ],
     },
 )
