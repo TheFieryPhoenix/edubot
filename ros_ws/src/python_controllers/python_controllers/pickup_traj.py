@@ -68,7 +68,7 @@ def get_symbolic_T_world_gc():
     q1,q2,q3,q4,q5 = sp.symbols('q1 q2 q3 q4 q5', real=True)
 
     # Fixed transforms from assignment (same as your FK)
-    T_world_base   = thin_tform([0,0,0], [0,0, sp.pi])  # assignment uses yaw=pi 
+    T_world_base   = thin_tform([0,0,0], [0,0, sp.pi])  
     T_base_sh      = thin_tform([0, -0.0452, 0.0165], [0,0,0]) * rot_z_4(q1)
     T_sh_ua        = thin_tform([0, -0.0306, 0.1025], [0, -1.57079, 0]) * rot_z_4(q2)
     T_ua_la        = thin_tform([0.11257, -0.028, 0], [0,0,0]) * rot_z_4(q3)
@@ -189,6 +189,83 @@ def wrap_vec_to_pi(v):
     return wrap_to_pi(np.asarray(v, dtype=float))
 
 
+def validate_joint_limits(q_vals):
+    """Validate q1..q5 against this controller's configured limits."""
+    q_norm = wrap_vec_to_pi(np.asarray(q_vals, dtype=float))
+    for index, value in enumerate(q_norm):
+        lo, hi = JOINT_LIMITS_RAD[index]
+        if not (lo <= value <= hi):
+            raise ValueError(
+                f"Joint q{index+1} out of bounds: {np.rad2deg(value):.2f} deg "
+                f"not in [{np.rad2deg(lo):.1f}, {np.rad2deg(hi):.1f}] deg")
+    return q_norm
+
+
+def compute_inverse_kinematics_consistent(X, Y, Z, theta_pitch=None, roll=0.0, preferred_pitch=0.0):
+    """Analytic IK matching Group 10 IK_with_limits equations.
+
+    If theta_pitch is None, sweep candidate pitches and return the first
+    solution that satisfies this controller's joint limits.
+    """
+    l2 = 0.1160
+    l3 = 0.1350
+    l4 = 0.1351
+
+    y1 = 0.0452
+    y2 = 0.0306
+    z1 = 0.0165
+    z2 = 0.1025
+
+    q1 = np.arctan2(Y - y1, X) - (np.pi / 2.0)
+
+    r_ee = np.sqrt(X**2 + (Y - y1)**2)
+    r_target = r_ee - y2
+    z_target = Z - (z1 + z2)
+
+    if theta_pitch is None:
+        # IK_with_limits-style strategy: try a range of pitches and keep
+        # the closest to horizontal first.
+        pitches = np.arange(-1.57, 1.57, 0.05)
+        pitches_to_test = sorted(pitches, key=lambda value: abs(value - preferred_pitch))
+    else:
+        pitches_to_test = [float(theta_pitch)]
+
+    last_error = None
+    for pitch in pitches_to_test:
+        try:
+            r_w = r_target - l4 * np.cos(pitch)
+            z_w = z_target - l4 * np.sin(pitch)
+
+            cos3 = (r_w**2 + z_w**2 - l2**2 - l3**2) / (2.0 * l2 * l3)
+            if cos3 > 1.0 or cos3 < -1.0:
+                continue
+
+            cos3 = max(min(float(cos3), 1.0), -1.0)
+            sin3 = np.sqrt(1.0 - cos3**2)
+            theta_3 = np.arctan2(sin3, cos3)
+
+            k1 = l2 + l3 * cos3
+            k2 = l3 * sin3
+            theta_2 = np.arctan2(z_w, r_w) + np.arctan2(k2, k1)
+
+            theta_2_off = np.arctan2(0.11257, 0.028)
+            theta_3_off = np.arctan2(0.0052, 0.1349)
+
+            q2 = theta_2 - theta_2_off
+            q3 = theta_2_off - theta_3 - theta_3_off
+            q4 = pitch - q2 - q3
+            q5 = roll
+
+            return validate_joint_limits([q1, q2, q3, q4, q5])
+        except ValueError as error:
+            last_error = error
+            continue
+
+    if last_error is not None:
+        raise ValueError(f'No valid IK solution found: {last_error}')
+    raise ValueError('Target is out of reach for all tested pitch angles.')
+
+
 # Per-joint position limits [min, max] in radians.
 # These are used ONLY to gate outgoing velocity commands.
 # Measured state is NEVER clamped – clamping raw sim output causes
@@ -225,11 +302,11 @@ class ExampleTraj(Node):
     def __init__(self):
         super().__init__('example_trajectory')
 
-        # joint home position – clamped to physical limits at construction
+        # joint home position – optimized for perpendicular (90° pitch) pickups
         self._HOME = clamp_q_to_limits(np.array([
-            np.deg2rad(0), np.deg2rad(70),
-            np.deg2rad(-40), np.deg2rad(-60),
-            np.deg2rad(0)
+            np.deg2rad(0), np.deg2rad(60),
+            np.deg2rad(-45), np.deg2rad(-85),
+            np.deg2rad(90)
         ], dtype=float))
 
         # state for velocity control
@@ -249,24 +326,27 @@ class ExampleTraj(Node):
         self._sequence_complete = False
         self._repeat_sequence = True
 
-        self._qdot_max       = 0.85    # nominal peak joint speed (rad/s) → sets move duration
+        self._qdot_max       = 0.5    # nominal peak joint speed (rad/s) → sets move duration
         self._kp_joint       = 2.4     # joint-space tracking gain
         self._joint_vel_limit = 1.2    # hard joint velocity clamp (rad/s)
-        self._min_move_duration = 0.30 # prevents extremely short, jerky segments
+        self._min_move_duration = 0.05 # prevents extremely short, jerky segments
         self._traj_q_start   = None    # joint config at start of current move segment
         self._traj_q_goal    = None    # joint config at end of current move segment
         self._phase_duration = None    # time for current segment [s]
 
-        self._use_absolute_targets = True
-        self._pickup_abs = np.array([0.3, 0.3, 0.01], dtype=float)
-        self._dropoff_abs = np.array([0.0, 0.05, 0.0], dtype=float)
-        self._pick_offset = np.array([0.0, 0.25, -0.1])
-        self._drop_offset = np.array([0.0, 0.00, -0.1])
-        self._clearance = 0.00
-        self._gripper_close_vel = -1.4
-        self._gripper_open_vel = 1.0
-        self._gripper_close_time = 0.35
-        self._gripper_open_time = 0.35
+        self._use_absolute_targets = False
+        self._pickup_abs = np.array([0.3, 0.1, 0.0], dtype=float) 
+        self._dropoff_abs = np.array([-0.2, 0.10, 0.0], dtype=float) # thickness of block is 0.02m
+        self._pick_offset = np.array([0.0, 0.10, -0.06], dtype=float)
+        self._drop_offset = np.array([0.10, 0.10, -0.06], dtype=float)
+        self._num_pickups = 3
+        self._pickup_spacing_x = -0.08
+        self._drop_height_step = 0.03
+        self._clearance = 0.05
+        self._gripper_close_vel = -1.8
+        self._gripper_open_vel = 1.2
+        self._gripper_close_time = 0.60
+        self._gripper_open_time = 0.60
         self._joint_name_candidates = {
             'q1': ['q1', 'Shoulder_Rotation'],
             'q2': ['q2', 'Shoulder_Pitch'],
@@ -354,42 +434,101 @@ class ExampleTraj(Node):
 
     def _build_phases(self, p_now):
         """IK-solve all Cartesian waypoints; return a joint-space phase list."""
-        pickup = (self._pickup_abs.copy() if self._use_absolute_targets
-                  else p_now + self._pick_offset)
-        pickup_above = pickup + np.array([0.0, 0.0, self._clearance])
+        pickup_base = (self._pickup_abs.copy() if self._use_absolute_targets
+                       else p_now + self._pick_offset)
+        dropoff_base = (self._dropoff_abs.copy() if self._use_absolute_targets
+                        else p_now + self._drop_offset)
 
-        self.get_logger().info('solving IK for waypoints…')
-        q_above = ik_solve_position(pickup_above, self._HOME,
-                                    self._fk_func, self._Jv_func)
-        q_pick  = ik_solve_position(pickup,       q_above,
-                                    self._fk_func, self._Jv_func)
-
-        # FK check: log how close IK solutions are to the targets
-        p_above_chk = np.array(self._fk_func(*q_above), dtype=float).reshape(3)
-        p_pick_chk  = np.array(self._fk_func(*q_pick),  dtype=float).reshape(3)
-        self.get_logger().info(
-            f'IK pickup_above: target={np.round(pickup_above,3)} '
-            f'FK={np.round(p_above_chk,3)} '
-            f'err={np.linalg.norm(p_above_chk-pickup_above)*1e3:.1f}mm')
-        self.get_logger().info(
-            f'IK pickup:       target={np.round(pickup,3)} '
-            f'FK={np.round(p_pick_chk,3)} '
-            f'err={np.linalg.norm(p_pick_chk-pickup)*1e3:.1f}mm')
-
-        return [
-            {'type': 'joint_move', 'q_goal': q_above,
-             'label': 'to pickup above'},
-            {'type': 'joint_move', 'q_goal': q_pick,
-             'label': 'to pickup'},
-            {'type': 'grip',
-             'gripper_vel': self._gripper_close_vel,
-             'duration':    self._gripper_close_time,
-             'label':       'close gripper'},
-            {'type': 'joint_move', 'q_goal': q_above.copy(),
-             'label': 'lift from pickup'},
-            {'type': 'joint_move', 'q_goal': self._HOME.copy(),
-             'label': 'return home'},
+        pickups = [
+            pickup_base + np.array([i * self._pickup_spacing_x, 0.0, 0.0], dtype=float)
+            for i in range(self._num_pickups)
         ]
+        dropoffs = [
+            dropoff_base + np.array([0.0, 0.0, i * self._drop_height_step], dtype=float)
+            for i in range(self._num_pickups)
+        ]
+
+        self.get_logger().info('solving IK_with_limits-consistent waypoints…')
+        phases = [
+            {'type': 'grip',
+             'gripper_vel': self._gripper_open_vel,
+             'duration':    self._gripper_open_time,
+             'label':       'open gripper'},
+        ]
+
+        for i, (pickup, dropoff) in enumerate(zip(pickups, dropoffs), start=1):
+            pickup_above = pickup + np.array([0.0, 0.0, self._clearance])
+            dropoff_above = dropoff + np.array([0.0, 0.0, self._clearance])
+            transit_waypoint = 0.5 * (pickup_above + dropoff_above) + np.array([0.0, 0.0, 0.03])
+
+            q_above = compute_inverse_kinematics_consistent(
+                float(pickup_above[0]), float(pickup_above[1]), float(pickup_above[2]),
+                theta_pitch=None,
+                preferred_pitch=-1.5,
+                roll=float(self._HOME[4])
+            )
+            q_pick = compute_inverse_kinematics_consistent(
+                float(pickup[0]), float(pickup[1]), float(pickup[2]),
+                theta_pitch=None,
+                preferred_pitch=-1.55,
+                roll=float(self._HOME[4])
+            )
+            q_drop_above = compute_inverse_kinematics_consistent(
+                float(dropoff_above[0]), float(dropoff_above[1]), float(dropoff_above[2]),
+                theta_pitch=None,
+                preferred_pitch=-1.5,
+                roll=float(self._HOME[4])
+            )
+            q_drop = compute_inverse_kinematics_consistent(
+                float(dropoff[0]), float(dropoff[1]), float(dropoff[2]),
+                theta_pitch=None,
+                preferred_pitch=-1.55,
+                roll=float(self._HOME[4])
+            )
+            q_transit = compute_inverse_kinematics_consistent(
+                float(transit_waypoint[0]), float(transit_waypoint[1]), float(transit_waypoint[2]),
+                theta_pitch=None,
+                preferred_pitch=-1.5,
+                roll=float(self._HOME[4])
+            )
+
+            p_pick_chk = np.array(self._fk_func(*q_pick), dtype=float).reshape(3)
+            p_drop_chk = np.array(self._fk_func(*q_drop), dtype=float).reshape(3)
+            self.get_logger().info(
+                f'IK pickup[{i}]: target={np.round(pickup,3)} '
+                f'FK={np.round(p_pick_chk,3)} '
+                f'err={np.linalg.norm(p_pick_chk-pickup)*1e3:.1f}mm')
+            self.get_logger().info(
+                f'IK drop[{i}]:   target={np.round(dropoff,3)} '
+                f'FK={np.round(p_drop_chk,3)} '
+                f'err={np.linalg.norm(p_drop_chk-dropoff)*1e3:.1f}mm')
+
+            phases.extend([
+                {'type': 'joint_move', 'q_goal': q_above,
+                 'label': f'to pickup above {i}'},
+                {'type': 'joint_move', 'q_goal': q_pick,
+                 'label': f'to pickup {i}'},
+                {'type': 'grip',
+                 'gripper_vel': self._gripper_close_vel,
+                 'duration':    self._gripper_close_time,
+                 'label':       f'close gripper {i}'},
+                {'type': 'joint_move', 'q_goal': q_above.copy(),
+                 'label': f'lift from pickup {i}'},
+                {'type': 'joint_move', 'q_goal': q_drop_above,
+                 'label': f'to dropoff above {i}'},
+                {'type': 'joint_move', 'q_goal': q_drop,
+                 'label': f'to dropoff {i}'},
+                {'type': 'grip',
+                 'gripper_vel': self._gripper_open_vel,
+                 'duration':    self._gripper_open_time,
+                 'label':       f'open at dropoff {i}'},
+                {'type': 'joint_move', 'q_goal': q_drop_above.copy(),
+                 'label': f'lift from dropoff {i}'},
+                {'type': 'joint_move', 'q_goal': q_transit,
+                 'label': f'to cycle waypoint {i}'},
+            ])
+
+        return phases
 
     def joint_state_callback(self, msg):
         if not msg.name or not msg.position:
@@ -479,24 +618,44 @@ class ExampleTraj(Node):
             self._phase_start_time = t_total
             self._sequence_started = True
             self._sequence_complete = False
-            # init joint-space trajectory for first phase
+            # init first phase state (may be grip or joint_move)
             phase0 = self._phases[0]
-            self._traj_q_start = self._q.copy()
-            self._traj_q_goal  = phase0['q_goal'].copy()
-            travel0 = float(np.max(np.abs(self._traj_q_goal - self._traj_q_start)))
-            self._phase_duration = max(travel0 / self._qdot_max, self._min_move_duration)
+            if phase0['type'] == 'joint_move':
+                self._traj_q_start = self._q.copy()
+                self._traj_q_goal  = phase0['q_goal'].copy()
+                travel0 = float(np.max(np.abs(self._traj_q_goal - self._traj_q_start)))
+                self._phase_duration = max(travel0 / self._qdot_max, self._min_move_duration)
+            else:
+                self._traj_q_start = None
+                self._traj_q_goal = None
+                self._phase_duration = phase0.get('duration', self._min_move_duration)
             self._last_phase_index_logged = 0
             self.get_logger().info(
                 f"pickup sequence started; phase 0: {phase0['label']} "
                 f"(T={self._phase_duration:.2f} s)")
-            # RViz marker: pickup target
-            pickup = (self._pickup_abs.copy() if self._use_absolute_targets
-                      else p_now + self._pick_offset)
-            pick_pt = Point()
-            pick_pt.x = float(pickup[0])
-            pick_pt.y = float(pickup[1])
-            pick_pt.z = float(pickup[2])
-            self._targets_marker.points = [pick_pt]
+            # RViz markers: pickup and dropoff targets
+            pickup_base = (self._pickup_abs.copy() if self._use_absolute_targets
+                           else p_now + self._pick_offset)
+            dropoff_base = (self._dropoff_abs.copy() if self._use_absolute_targets
+                            else p_now + self._drop_offset)
+            marker_points = []
+            for i in range(self._num_pickups):
+                pickup = pickup_base + np.array([i * self._pickup_spacing_x, 0.0, 0.0], dtype=float)
+                dropoff = dropoff_base + np.array([0.0, 0.0, i * self._drop_height_step], dtype=float)
+
+                pick_pt = Point()
+                pick_pt.x = float(pickup[0])
+                pick_pt.y = float(pickup[1])
+                pick_pt.z = float(pickup[2])
+                marker_points.append(pick_pt)
+
+                drop_pt = Point()
+                drop_pt.x = float(dropoff[0])
+                drop_pt.y = float(dropoff[1])
+                drop_pt.z = float(dropoff[2])
+                marker_points.append(drop_pt)
+
+            self._targets_marker.points = marker_points
             self._targets_marker.header.stamp = now.to_msg()
             self._marker_pub.publish(self._targets_marker)
 
