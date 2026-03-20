@@ -306,7 +306,7 @@ class ExampleTraj(Node):
         self._HOME = clamp_q_to_limits(np.array([
             np.deg2rad(0), np.deg2rad(60),
             np.deg2rad(-45), np.deg2rad(-85),
-            np.deg2rad(90)
+            np.deg2rad(0)
         ], dtype=float))
 
         # state for velocity control
