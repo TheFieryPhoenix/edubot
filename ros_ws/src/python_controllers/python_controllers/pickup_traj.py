@@ -249,8 +249,10 @@ class ExampleTraj(Node):
         self._sequence_complete = False
         self._repeat_sequence = True
 
-        self._qdot_max       = 0.5     # nominal peak joint speed (rad/s) → sets move duration
-        self._kp_joint       = 2.0     # joint-space tracking gain
+        self._qdot_max       = 0.85    # nominal peak joint speed (rad/s) → sets move duration
+        self._kp_joint       = 2.4     # joint-space tracking gain
+        self._joint_vel_limit = 1.2    # hard joint velocity clamp (rad/s)
+        self._min_move_duration = 0.30 # prevents extremely short, jerky segments
         self._traj_q_start   = None    # joint config at start of current move segment
         self._traj_q_goal    = None    # joint config at end of current move segment
         self._phase_duration = None    # time for current segment [s]
@@ -261,9 +263,10 @@ class ExampleTraj(Node):
         self._pick_offset = np.array([0.0, 0.25, -0.1])
         self._drop_offset = np.array([0.0, 0.00, -0.1])
         self._clearance = 0.00
-        self._gripper_close_vel = -0.8
-        self._gripper_open_vel = 0.8
-        self._gripper_action_time = 1.0
+        self._gripper_close_vel = -1.4
+        self._gripper_open_vel = 1.0
+        self._gripper_close_time = 0.35
+        self._gripper_open_time = 0.35
         self._joint_name_candidates = {
             'q1': ['q1', 'Shoulder_Rotation'],
             'q2': ['q2', 'Shoulder_Pitch'],
@@ -333,7 +336,7 @@ class ExampleTraj(Node):
                     self._traj_q_start = self._q.copy()
                     self._traj_q_goal  = phase['q_goal'].copy()
                     travel = float(np.max(np.abs(self._traj_q_goal - self._traj_q_start)))
-                    self._phase_duration = max(travel / self._qdot_max, 0.5)
+                    self._phase_duration = max(travel / self._qdot_max, self._min_move_duration)
                 return
             self._sequence_complete = True
             self.get_logger().info('pickup sequence complete; holding position')
@@ -347,7 +350,7 @@ class ExampleTraj(Node):
             self._traj_q_start = self._q.copy()
             self._traj_q_goal  = phase['q_goal'].copy()
             travel = float(np.max(np.abs(self._traj_q_goal - self._traj_q_start)))
-            self._phase_duration = max(travel / self._qdot_max, 0.5)
+            self._phase_duration = max(travel / self._qdot_max, self._min_move_duration)
 
     def _build_phases(self, p_now):
         """IK-solve all Cartesian waypoints; return a joint-space phase list."""
@@ -380,7 +383,7 @@ class ExampleTraj(Node):
              'label': 'to pickup'},
             {'type': 'grip',
              'gripper_vel': self._gripper_close_vel,
-             'duration':    self._gripper_action_time,
+             'duration':    self._gripper_close_time,
              'label':       'close gripper'},
             {'type': 'joint_move', 'q_goal': q_above.copy(),
              'label': 'lift from pickup'},
@@ -481,7 +484,7 @@ class ExampleTraj(Node):
             self._traj_q_start = self._q.copy()
             self._traj_q_goal  = phase0['q_goal'].copy()
             travel0 = float(np.max(np.abs(self._traj_q_goal - self._traj_q_start)))
-            self._phase_duration = max(travel0 / self._qdot_max, 0.5)
+            self._phase_duration = max(travel0 / self._qdot_max, self._min_move_duration)
             self._last_phase_index_logged = 0
             self.get_logger().info(
                 f"pickup sequence started; phase 0: {phase0['label']} "
@@ -515,7 +518,7 @@ class ExampleTraj(Node):
             q_des   = self._traj_q_start + s * chord        # desired joint position
             qdot_ff = s_dot * chord                          # feedforward joint velocity
             dq = qdot_ff + self._kp_joint * (q_des - self._q)  # ff + tracking correction
-            dq = clamp_vec(dq, 1.0)
+            dq = clamp_vec(dq, self._joint_vel_limit)
             dq = gate_vel_at_limits(self._q, dq)
             if alpha >= 1.0:
                 self._advance_phase(t_total)

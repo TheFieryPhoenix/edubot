@@ -15,10 +15,14 @@ def generate_launch_description():
     pkg_share = FindPackageShare(package=pkg_name).find(pkg_name)
     ld = LaunchDescription()
 
-    start_sim = Node(package = pkg_name,
-                     name = "lerobot_sim",
-                     executable = "lerobot_sim",
-                     parameters=[pkg_share + '/config/lerobot_vel_sim.yaml'])
+    start_sim = Node(
+        package=pkg_name,
+        name="lerobot_sim",
+        executable="lerobot_sim",
+        parameters=[
+            {'mode': 'velocity'}
+        ]
+    )
     
     #start_path_pub = Node(package = pkg_name,
     #                      name = "path_publisher",
