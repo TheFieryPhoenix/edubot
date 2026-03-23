@@ -154,12 +154,12 @@ class ExampleTraj(Node):
 
         self.cycle_time = 20.0 
         
-        # --- Horizontal Square Configuration in X-Y plane (reachable) ---
-        # The requested y-range with x<0.20 is out of reach at low Z; use safe region instead.
-        self.p1 = np.array([ 0.20, 0.10, 0.10])  # Bottom-Left
-        self.p2 = np.array([ 0.35, 0.10, 0.10])  # Bottom-Right
-        self.p3 = np.array([ 0.35, 0.25, 0.10])  # Top-Right
-        self.p4 = np.array([ 0.20, 0.25, 0.10])  # Top-Left
+        # --- Vertical Square Configuration in X-Z plane (Y constant) ---
+        # Keep Y=0.10 constant, vary X and Z for a square in X-Z plane.
+        self.p1 = np.array([0.20, 0.10, 0.10])  # Bottom-Left
+        self.p2 = np.array([0.35, 0.10, 0.10])  # Bottom-Right
+        self.p3 = np.array([0.35, 0.10, 0.25])  # Top-Right
+        self.p4 = np.array([0.20, 0.10, 0.25])  # Top-Left
         
         timer_period = 0.04  # 25 Hz
         self._timer = self.create_timer(timer_period, self.timer_callback)
@@ -193,8 +193,8 @@ class ExampleTraj(Node):
                 X=target_xyz[0], 
                 Y=target_xyz[1], 
                 Z=target_xyz[2], 
-                theta_pitch=0.0,  # keep end-effector horizontal for XY-plane square
-                roll=math.pi/2  # rotate gripper 90 degrees
+                theta_pitch=None,  # dynamically choose best pitch
+                roll=0.0
             )
             
             msg = JointTrajectory()
