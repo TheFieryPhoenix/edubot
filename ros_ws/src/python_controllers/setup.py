@@ -31,7 +31,8 @@ setup(
             'kinematics_utils = python_controllers.kinematics_utils:main',
             'square_trajectory_node = python_controllers.square_trajectory_node:main',
             'pick_and_place = python_controllers.pick_and_place:main',
-            'ik_pick_and_place = python_controllers.ik_pick_and_place:main'
+            'ik_pick_and_place = python_controllers.ik_pick_and_place:main',
+            'pick_and_place_copy = python_controllers.pick_and_place_copy:main'
         ],
     },
 )
