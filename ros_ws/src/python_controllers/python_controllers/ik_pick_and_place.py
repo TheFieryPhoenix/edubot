@@ -10,54 +10,61 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 # ==========================================
 # 1. RELATIVE INVERSE KINEMATICS FUNCTION
 # ==========================================
-# ==========================================
 # 1. RELATIVE INVERSE KINEMATICS FUNCTION
 # ==========================================
-def get_offset_angles(base_place_angles, z_offset_meters):
+def get_offset_angles(base_place_angles, z_offset_meters, r_offset_meters=0.0):
     """
-    Takes known physical joint angles, finds their theoretical 2D Cartesian plane,
-    adds a Z offset, and calculates the new joint angles required to reach that height
-    while keeping the horizontal extension and tool pitch locked perfectly in place.
+    Calculates new joint angles for a Z (height) and R (horizontal reach) offset,
+    keeping the tool pitch locked perfectly in place.
     """
     q1_base, q2_base, q3_base, q4_base, q5_base, gripper = base_place_angles
     
-    if z_offset_meters == 0.0:
-        return base_place_angles # No change required
+    if z_offset_meters == 0.0 and r_offset_meters == 0.0:
+        return base_place_angles
         
-    # --- Kinematic Link Lengths & Offsets ---
-    l2 = 0.1160
-    l3 = 0.1350
+    # --- Step 1: Apply Hardware Offsets ---
+    off_q2, off_q3, off_q4 = -0.135, 0.021, -0.025
+    q2_true = q2_base - off_q2
+    q3_true = q3_base - off_q3
+    q4_true = q4_base - off_q4
+    
+    # --- Kinematic Link Lengths & URDF Offsets ---
+    l2, l3 = 0.1160, 0.1350
     theta_2_off = math.atan2(0.11257, 0.028)
     theta_3_off = math.atan2(0.0052, 0.1349)
     
-    # Step 1: Forward Kinematics
-    theta_2 = q2_base + theta_2_off
-    theta_3 = theta_2_off - q3_base - theta_3_off
-    pitch = q2_base + q3_base + q4_base
+    # --- Step 2: Forward Kinematics ---
+    theta_2 = q2_true + theta_2_off
+    theta_3 = theta_2_off - q3_true - theta_3_off
+    pitch = q2_true + q3_true + q4_true
     
-    # [FIXED] Using minus theta_3 to match the robot's physical URDF joint mapping
     r_w = l2 * math.cos(theta_2) + l3 * math.cos(theta_2 - theta_3)
     z_w = l2 * math.sin(theta_2) + l3 * math.sin(theta_2 - theta_3)
     
-    # Step 2: Add the requested Z height
+    # --- Step 3: Add the requested Z and R offsets ---
     z_w_new = z_w + z_offset_meters
+    r_w_new = r_w + r_offset_meters  # <--- NEW: Adjusts horizontal reach
     
-    # Step 3: Inverse Kinematics for the new height
-    cos3 = (r_w**2 + z_w_new**2 - l2**2 - l3**2) / (2 * l2 * l3)
+    # --- Step 4: Inverse Kinematics ---
+    cos3 = (r_w_new**2 + z_w_new**2 - l2**2 - l3**2) / (2 * l2 * l3)
     if cos3 > 1.0 or cos3 < -1.0:
-        raise ValueError(f"Target height offset of +{z_offset_meters}m is out of physical reach.")
+        raise ValueError(f"Target offset Z:+{z_offset_meters}m, R:{r_offset_meters}m is out of reach.")
         
     sin3 = math.sqrt(1 - cos3**2)
     theta_3_new = math.atan2(sin3, cos3)
     
     k1 = l2 + l3 * cos3
     k2 = l3 * sin3
-    theta_2_new = math.atan2(z_w_new, r_w) + math.atan2(k2, k1)
+    theta_2_new = math.atan2(z_w_new, r_w_new) + math.atan2(k2, k1)
     
-    # Step 4: Map back to actual physical joint angles
-    q2_new = theta_2_new - theta_2_off
-    q3_new = theta_2_off - theta_3_new - theta_3_off
-    q4_new = pitch - q2_new - q3_new
+    # --- Step 5 & 6: Map back to Software Angles ---
+    q2_new_true = theta_2_new - theta_2_off
+    q3_new_true = theta_2_off - theta_3_new - theta_3_off
+    q4_new_true = pitch - q2_new_true - q3_new_true
+    
+    q2_new = q2_new_true + off_q2
+    q3_new = q3_new_true + off_q3
+    q4_new = q4_new_true + off_q4
     
     return [q1_base, q2_new, q3_new, q4_new, q5_base, gripper]
 
@@ -77,10 +84,10 @@ class PickAndPlaceEduBot(Node):
         GRIPPER_CLOSED = 0.3
 
         # Hardcoded Home and Pick positions
-        HOME       = [ 0.1733,  1.1720, -1.1520, -1.1950, -1.5355, GRIPPER_OPEN]
-        PRE_GRASP  = [-0.1795, -0.0460, -0.4556, -1.1244, -1.5300, GRIPPER_OPEN]
-        GRASP_0    = [-0.1795, -0.4571, -0.2807, -1.1183, -1.5300, GRIPPER_CLOSED]
-        POST_GRASP = [-0.1795, -0.0460, -0.4556, -1.1244, -1.5300, GRIPPER_CLOSED]
+        HOME       = [0.02141, 0.2929, -0.5583, -1.6613, -1.6321, GRIPPER_OPEN]
+        PRE_GRASP  = [0.042141, 0.2929, -0.5583, -1.6613, -1.6321, GRIPPER_OPEN]
+        GRASP_0    = [0.0241, 0.06289, -0.9480, -1.13054, -1.5830, GRIPPER_CLOSED]
+        POST_GRASP = [0.02141, 0.2929, -0.5583, -1.6613, -1.6321, GRIPPER_CLOSED]
 
         # ---------------------------------------------------------
         # Dynamic Stacking via Relative IK
@@ -93,20 +100,30 @@ class PickAndPlaceEduBot(Node):
 
         stack_targets = []
         
-        # Generate target configurations for 5 blocks (+2cm per block)
-        for i in range(5):
-            z_offset = i * 0.020 # 0.00m, 0.02m, 0.04m, 0.06m, 0.08m
+        # Generate target configurations for 8 blocks (+2cm per block)
+# Generate target configurations for 8 blocks (+2cm per block)
+        for i in range(8):
+            z_offset = i * 0.020 
+            r_offset = 0.003 # Default: perfectly straight up
+            
+            # --- MANUALLY TUNE SPECIFIC BLOCKS HERE ---
+            if i == 5: # Block 7
+                r_offset = -0.030 # Pull 5mm backwards (closer to robot)
+
+            elif i == 6: # Block 8
+                r_offset = -0.030 # Pull 1cm backwards (closer to robot)
+
             try:
-                new_angles = get_offset_angles(PLACE_1, z_offset)
+                # Pass both the Z and the R offset to the math
+                new_angles = get_offset_angles(PLACE_1, z_offset, r_offset)
                 stack_targets.append(new_angles)
                 
-                # Print the calculated angles to the terminal for debugging
                 angles_str = ", ".join([f"{q:.4f}" for q in new_angles])
-                self.get_logger().info(f"Calculated IK for Block {i+1} (+{z_offset}m): [{angles_str}]")
+                self.get_logger().info(f"Calculated IK Block {i+1} (Z:+{z_offset}m, R:{r_offset}m): [{angles_str}]")
                 
             except ValueError as e:
                 self.get_logger().error(str(e))
-                stack_targets.append(HOME) # Fallback if out of reach
+                stack_targets.append(HOME)
 
         # Calculate Universal Clearances (Hovering 15cm above PLACE_1)
         try:
@@ -118,31 +135,11 @@ class PickAndPlaceEduBot(Node):
             UNIVERSAL_PRE_PLACE  = [PLACE_BASE, 0.0000, -0.8713, -1.3898, PLACE_TILT, GRIPPER_CLOSED]
             UNIVERSAL_POST_PLACE = [PLACE_BASE, 0.0000, -0.8713, -1.3898, PLACE_TILT, GRIPPER_OPEN]
 
-        # # ---------------------------------------------------------
-        # # Sequence Generation
-        # # ---------------------------------------------------------
-        # self.sequence = [(HOME, 3.0, "Moving to Home")]
-
-        # for i, target_place in enumerate(stack_targets):
-        #     block_num = i + 1
-        #     self.sequence.extend([
-        #         # Pick Phase
-        #         (PRE_GRASP,  2.5, f"[Block {block_num}] Moving above pick zone"),
-        #         (GRASP_0,    2.0, f"[Block {block_num}] Lowering to pick object"),
-        #         (POST_GRASP, 1.5, f"[Block {block_num}] Closing Gripper & Lifting"),
-                
-        #         # Place Phase
-        #         (UNIVERSAL_PRE_PLACE, 3.5, f"[Block {block_num}] Hovering above drop zone"),
-        #         (target_place,        3.5, f"[Block {block_num}] Lowering to Stack Level {block_num}"),
-        #         (UNIVERSAL_POST_PLACE,3.5, f"[Block {block_num}] Opening Gripper & Lifting safely")
-        #     ])
-
-        # self.sequence.append((HOME, 3.0, "Sequence Complete! Returning Home"))
         
         # ---------------------------------------------------------
         # OPTIMIZED Sequence Generation (~6.5s per block)
         # ---------------------------------------------------------
-        self.sequence = [] # Skip the initial home to save 3 seconds right away!
+        self.sequence = [(HOME, 3.0, "Moving to Home")] # Skip the initial home to save 3 seconds right away!
 
         for i, target_place in enumerate(stack_targets):
             block_num = i + 1
@@ -163,19 +160,19 @@ class PickAndPlaceEduBot(Node):
             self.sequence.extend([
                 # --- PICK PHASE ---
                 # Fast sweep to pick zone
-                (PRE_GRASP,  1.5, f"[Block {block_num}] Sweeping to pick zone"),
+                (PRE_GRASP,  1.3, f"[Block {block_num}] Sweeping to pick zone"),
                 # Quick plunge
-                (GRASP_0,    0.7, f"[Block {block_num}] Plunge"),
+                (GRASP_0,    1.2, f"[Block {block_num}] Plunge"),
                 # Fast bite and immediate lift
-                (POST_GRASP, 0.5, f"[Block {block_num}] Bite & Lift"),
+                (POST_GRASP, 0.9, f"[Block {block_num}] Bite & Lift"),
                 
                 # --- PLACE PHASE ---
                 # Long lateral sweep to the dynamic hover point
-                (DYNAMIC_PRE_PLACE,  2.0, f"[Block {block_num}] Sweeping to Stack"),
+                (DYNAMIC_PRE_PLACE,  1.7, f"[Block {block_num}] Sweeping to Stack"),
                 # Gentle vertical drop to place the block (STABILITY FOCUS)
-                (target_place,       1.0, f"[Block {block_num}] Gentle Drop"),
+                (target_place,       1.7, f"[Block {block_num}] Gentle Drop"),
                 # Fast vertical retreat while springing the gripper open
-                (DYNAMIC_POST_PLACE, 0.7, f"[Block {block_num}] Fast Retreat & Release")
+                (DYNAMIC_POST_PLACE, 1.0, f"[Block {block_num}] Fast Retreat & Release")
             ])
             
         # Optional: Return home only when the timer is likely up
