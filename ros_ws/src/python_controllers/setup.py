@@ -32,6 +32,7 @@ setup(
             'ik_pick_and_place = python_controllers.ik_pick_and_place:main',
             'pick_and_place_copy = python_controllers.pick_and_place_copy:main',
             'publish_traj = python_controllers.publish_traj:main',
+            'test_ik_pos = python_controllers.test_ik_pos:main',
         ],
     },
 )

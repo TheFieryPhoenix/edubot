@@ -104,14 +104,14 @@ class PickAndPlaceEduBot(Node):
 # Generate target configurations for 8 blocks (+2cm per block)
         for i in range(8):
             z_offset = i * 0.020 
-            r_offset = 0.003 # Default: perfectly straight up
+            r_offset = 0.02 # Default: perfectly straight up
             
-            # --- MANUALLY TUNE SPECIFIC BLOCKS HERE ---
-            if i == 5: # Block 7
-                r_offset = -0.030 # Pull 5mm backwards (closer to robot)
+            # # --- MANUALLY TUNE SPECIFIC BLOCKS HERE ---
+            # if i == 5: # Block 7
+            #     r_offset = -0.030 # Pull 5mm backwards (closer to robot)
 
-            elif i == 6: # Block 8
-                r_offset = -0.030 # Pull 1cm backwards (closer to robot)
+            # elif i == 6: # Block 8
+            #     r_offset = -0.060 # Pull 1cm backwards (closer to robot)
 
             try:
                 # Pass both the Z and the R offset to the math
@@ -164,7 +164,7 @@ class PickAndPlaceEduBot(Node):
                 # Quick plunge
                 (GRASP_0,    1.2, f"[Block {block_num}] Plunge"),
                 # Fast bite and immediate lift
-                (POST_GRASP, 0.9, f"[Block {block_num}] Bite & Lift"),
+                (POST_GRASP, 1.2, f"[Block {block_num}] Bite & Lift"),
                 
                 # --- PLACE PHASE ---
                 # Long lateral sweep to the dynamic hover point
@@ -172,7 +172,7 @@ class PickAndPlaceEduBot(Node):
                 # Gentle vertical drop to place the block (STABILITY FOCUS)
                 (target_place,       1.7, f"[Block {block_num}] Gentle Drop"),
                 # Fast vertical retreat while springing the gripper open
-                (DYNAMIC_POST_PLACE, 1.0, f"[Block {block_num}] Fast Retreat & Release")
+                (DYNAMIC_POST_PLACE, 1.1, f"[Block {block_num}] Fast Retreat & Release")
             ])
             
         # Optional: Return home only when the timer is likely up
