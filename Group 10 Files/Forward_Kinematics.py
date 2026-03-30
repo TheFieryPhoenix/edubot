@@ -64,7 +64,7 @@ sp.pprint(p_fk)
 print("\nRotation:")
 sp.pprint(R_fk)
 
-test_cfg = {q1: 0, q2: 1.57, q3: 1.58, q4: 0, q5: 0}
+test_cfg = {q1: 0.91, q2: 0.2715, q3: -1.1137, q4: -1.0324, q5: -0.748}
 print("\nNumerical test position:")
 sp.pprint(p_fk.subs(test_cfg).evalf(6))
 
